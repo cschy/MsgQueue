@@ -357,6 +357,8 @@ EXPORT BOOL RecvMsg(unsigned int self, std::function<void(PMYMSG)> callback)
 	}
 	WaitForSingleObject(proc->event, INFINITE);
 
+	ULONGLONG func_total = 0;
+	ULONGLONG start = GetTickCount64();
 	cc::bilist* p = &bilshead.bils;
 	while (p)
 	{
@@ -366,11 +368,19 @@ EXPORT BOOL RecvMsg(unsigned int self, std::function<void(PMYMSG)> callback)
 			PMSGINFO mi = PMSGINFO(node->data);
 			if (mi->toOne == self)
 			{
-				callback(&mi->msg);
+				ULONGLONG func_start = GetTickCount64();
+				callback(&mi->msg);//导致消费者慢的主要原因，下面的话当我没说
+				func_total += (GetTickCount64() - func_start);
+
 				cc::bilist::delete_node(p, &msqinfo);
 				cc::list::insert_node(&lshead.ls, &lsmem[mi->index].ls, &meminfo);
 				proc->recvmsgs++;
 				std::cout << "recv:" << proc->recvmsgs << " msqsize:" << msqinfo.node_nums << std::endl;
+				if (msqinfo.node_nums == 0) {
+					std::cout << "func-time:" << func_total << std::endl;
+					std::cout << "total-time:" << GetTickCount64() - start << std::endl;
+					//采样结果(ms)：1440-3105、3669-7719、5656-12843
+				}
 				//break;
 				// break代表一次处理一个消息，消息的轮询收受外层循环(调用者)的影响
 				// break之后就返回，如果消费速度跟不上生产速度，事实上主要由于生产者设置信号到消费者收到信号也需要一定的时间
