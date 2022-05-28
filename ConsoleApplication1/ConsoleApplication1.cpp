@@ -84,16 +84,12 @@ int main()
         localtime_s(&t, &msg->createTime);
 #if TEST_TIME
         localtime_total += (GetTickCount64() - start_localtime);
-#endif
-#if TEST_TIME
         ULONGLONG start_ss = GetTickCount64();
 #endif
         std::wstringstream ss;
         ss << std::put_time(/*std::localtime(&msg->createTime)*/&t, L"%Y-%m-%d %H:%M:%S");
 #if TEST_TIME
         ss_total += (GetTickCount64() - start_ss);
-#endif
-#if TEST_TIME
         ULONGLONG start_wpf = GetTickCount64();
 #endif
         //wprintf(L"收到msg:%s, time:%s\n", msg->msgCore.strMsg, ss.str().c_str());//同步io影响了消费者速度
@@ -105,8 +101,6 @@ int main()
         //WriteFile(hOut, buf, lstrlen(buf)*2, NULL, NULL);//乱码，认为底层调用的是WriteConsoleA()，因为和WriteConsoleA()输出一样
 #if TEST_TIME
         wpf_total += (GetTickCount64() - start_wpf);
-#endif
-#if TEST_TIME
         if (count == 4096) {
             std::cout << "localtime_total:" << localtime_total << std::endl;//0
             std::cout << "ss_total:" << ss_total << std::endl;//32
