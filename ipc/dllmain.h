@@ -30,10 +30,16 @@ const int max_node = USN_PAGE_SIZE;
 typedef struct _MyMsg {
 	unsigned int fromOne;
 	unsigned int type;
-	union MsgCore {
+	/*union MsgCore {
 		TCHAR strMsg[BUFSIZ];
 		void* vMsg;
 		int iMsg;
+	}msgCore;*/
+	union MsgCore {
+		static const size_t size{ 64 };//外部可根据这个大小把msgCore地址强制类型转换再赋值
+		TCHAR strMsg[size / sizeof(TCHAR)];
+		char* cMsg[size / sizeof(char*)];
+		void* vMsg[size / sizeof(void*)];
 	}msgCore;
 	std::time_t createTime;
 }MYMSG, * PMYMSG;
@@ -55,127 +61,112 @@ typedef struct _MsgInfo {
 //auto a = sizeof MSGINFO;
 
 namespace cc {
+	namespace abs {
+		struct ListInfo {
+			CRITICAL_SECTION cs;
+			size_t node_nums;
+		};
+		struct IList {
+			static ListInfo info;
+			virtual ~IList() {}
+			virtual void insert_node(IList* head, IList* node) = 0;
+			virtual IList* delete_node(IList* head, IList* node = nullptr) = 0;
+		};
+		//single loop list
+		struct List : public IList {
+			List* next;
+			virtual void insert_node(List* head, List* node) {
+				EnterCriticalSection(&info.cs);
+				if (head && node) {
+					node->next = head->next;
+					head->next = node;
+					info.node_nums++;
+				}
+				LeaveCriticalSection(&info.cs);
+			}
+			virtual List* delete_node(List* head, List* node) {
+				EnterCriticalSection(&info.cs);
+				List* retNode = nullptr;
+				if (!node) {
+					node = head->next;
+				}
+				List* preNode = head;
+				for (retNode = preNode->next; retNode != head; retNode = retNode->next, preNode = preNode->next) {
+					if (retNode == node) {
+						preNode->next = retNode->next;
+						//retNode->next = nullptr;
+						info.node_nums--;
+						break;
+					}
+				}
+				LeaveCriticalSection(&info.cs);
+				return retNode;
+			}
+		};
+		//double loop list
+		struct BiList : public IList {
+			BiList* prev;
+			BiList* next;
+			virtual void insert_node(BiList* head, BiList* node) {
+				EnterCriticalSection(&info.cs);
+				if (head && node) {
+					BiList* prev = head->prev;
+					node->prev = prev;
+					node->next = head;
+					head->prev = node;
+					prev->next = node;//因为是next遍历，所以先操作prev指针，后操作next指针
+					info.node_nums++;
+				}
+				LeaveCriticalSection(&info.cs);
+			}
+			virtual BiList* delete_node(BiList* head, BiList* node) {
+				EnterCriticalSection(&info.cs);
+				BiList* retNode = node ? node : head->next;
+				if (retNode != head) {
+					BiList* next = retNode->next;
+					BiList* prev = retNode->prev;
+					next->prev = prev;
+					prev->next = retNode->next;
+					//retNode->prev = nullptr;
+					//retNode->next = nullptr;
+					//如果取消上一行注释，那么导致RecvMsg()中p->next=null而退出循环，和break一样了
+					info.node_nums--;
+				}
+				LeaveCriticalSection(&info.cs);
+				return retNode;
+			}
+		};
+	}
+
 	struct listinfo {
 		CRITICAL_SECTION cs;
 		size_t node_nums;
 	};
 
-	namespace abs {
-		struct ilist {
-			virtual ~ilist() {}
-			virtual void insert_node(ilist* head, ilist* node, listinfo* lsinfo) = 0;
-			virtual void delete_node(ilist* node, listinfo* lsinfo) = 0;
-			virtual ilist* pop_node(ilist* head, listinfo* lsinfo) = 0;
-		};
-		struct listhead : public ilist {
-			listinfo* lsinfo;
-			ilist* ils;
-		};
-		//single loop list
-		struct sllist : public ilist {
-			sllist* next;
-			virtual void insert_node(sllist* head, sllist* node, listinfo* lsinfo) {
-				EnterCriticalSection(&lsinfo->cs);
-				if (head && node) {
-					node->next = head->next;
-					head->next = node;
-				}
-				LeaveCriticalSection(&lsinfo->cs);
-			}
-			virtual void delete_node(sllist* node, listinfo* lsinfo) {
-
-			}
-			virtual sllist* pop_node(sllist* head, listinfo* lsinfo) {
-				EnterCriticalSection(&lsinfo->cs);
-				sllist* node = head->next;
-				if (head != node) {
-					head->next = node->next;
-					node->next = nullptr;
-				}
-				LeaveCriticalSection(&lsinfo->cs);
-				return node;
-			}
-		};
-		//double loop list
-		struct bllist : public ilist {
-			bllist* prev;
-			bllist* next;
-			virtual void insert_node(bllist* head, bllist* node, listinfo* lsinfo) {
-				EnterCriticalSection(&lsinfo->cs);
-				if (head && node) {
-					bllist* prev = head->prev;
-					node->prev = prev;
-					node->next = head;
-					prev->next = node;
-					head->prev = node;
-				}
-				LeaveCriticalSection(&lsinfo->cs);
-			}
-			virtual void delete_node(bllist* node, listinfo* lsinfo) {
-				EnterCriticalSection(&lsinfo->cs);
-				bllist* next = node->next;
-				bllist* prev = node->prev;
-				prev->next = node->next;
-				next->prev = prev;
-				node->prev = nullptr;
-				node->next = nullptr;
-				LeaveCriticalSection(&lsinfo->cs);
-			}
-			virtual bllist* pop_node(bllist* head, listinfo* lsinfo) {
-				return nullptr;
-			}
-		};
-	}
-
 	struct list {
 		list* next;
-		static void insert_node(list* head, list* node, listinfo* lsinfo) {
-			EnterCriticalSection(&lsinfo->cs);
+		static listinfo info;
+		static void insert_node(list* head, list* node) {
+			EnterCriticalSection(&info.cs);
 			if (head && node) {
 				node->next = head->next;
 				head->next = node;
-				lsinfo->node_nums++;
+				info.node_nums++;
 			}
-			LeaveCriticalSection(&lsinfo->cs);
+			LeaveCriticalSection(&info.cs);
 		}
-		static list* pop_node(list* head, listinfo* lsinfo) {
-			EnterCriticalSection(&lsinfo->cs);
+		static list* pop_node(list* head) {
+			EnterCriticalSection(&info.cs);
 			list* node = head->next;
 			if (head != node) {
 				head->next = node->next;
 				node->next = nullptr;
-				lsinfo->node_nums--;
+				info.node_nums--;
 			}
-			LeaveCriticalSection(&lsinfo->cs);
+			LeaveCriticalSection(&info.cs);
 			return node;
 		}
 	};
-	//void list_insert(list* head, list* node, CRITICAL_SECTION* cs = NULL) {
-	//	if (cs) {
-	//		EnterCriticalSection(cs);
-	//	}
-	//	if (head && node) {
-	//		node->next = head->next;
-	//		head->next = node;
-	//	}
-	//	if (cs) {
-	//		LeaveCriticalSection(cs);
-	//	}
-	//}
-	//list* list_delete(list* head, CRITICAL_SECTION* cs = NULL) {
-	//	if (cs) {
-	//		EnterCriticalSection(cs);
-	//	}
-	//	list* node = head->next;
-	//	if (head && node && (head != node)) {
-	//		head->next = node->next;
-	//		//node->next = nullptr;
-	//	}
-	//	if (cs) {
-	//		LeaveCriticalSection(cs);
-	//	}
-	//	return node;
-	//}
 
 	struct datalist {
 		void* data;
@@ -186,20 +177,21 @@ namespace cc {
 	struct bilist {
 		bilist* prev;
 		bilist* next;
-		static void insert_node(bilist* head, bilist* node, listinfo* lsinfo) {
-			EnterCriticalSection(&lsinfo->cs);
+		static listinfo info;
+		static void insert_node(bilist* head, bilist* node) {
+			EnterCriticalSection(&info.cs);
 			if (head && node) {
 				bilist* prev = head->prev;
 				node->prev = prev;
 				node->next = head;
 				head->prev = node;
 				prev->next = node;//因为是next遍历，所以先操作prev指针，后操作next指针
-				lsinfo->node_nums++;
+				info.node_nums++;
 			}
-			LeaveCriticalSection(&lsinfo->cs);
+			LeaveCriticalSection(&info.cs);
 		}
-		static void delete_node(bilist* node, listinfo* lsinfo) {
-			EnterCriticalSection(&lsinfo->cs);
+		static void delete_node(bilist* node) {
+			EnterCriticalSection(&info.cs);
 			bilist* next = node->next;
 			bilist* prev = node->prev;
 			next->prev = prev;
@@ -207,41 +199,10 @@ namespace cc {
 			//node->prev = nullptr;
 			//node->next = nullptr;
 			//如果取消上一行注释，那么导致RecvMsg()中p->next=null而退出循环，和break一样了
-			lsinfo->node_nums--;
-			LeaveCriticalSection(&lsinfo->cs);
+			info.node_nums--;
+			LeaveCriticalSection(&info.cs);
 		}
 	};
-	//void bilist_insert(bilist* head, bilist* node, CRITICAL_SECTION* cs = NULL) {
-	//	if (cs) {
-	//		EnterCriticalSection(cs);
-	//	}
-	//	if (head && node) {
-	//		bilist* prev = head->prev;
-	//		node->prev = prev;
-	//		node->next = head;
-	//		if (prev) {
-	//			prev->next = node;
-	//		}
-	//		head->prev = node;
-	//	}
-	//	if (cs) {
-	//		LeaveCriticalSection(cs);
-	//	}
-	//}
-	//void bilist_delete(bilist* node, CRITICAL_SECTION* cs = NULL) {
-	//	if (cs) {
-	//		EnterCriticalSection(cs);
-	//	}
-	//	bilist* next = node->next;
-	//	bilist* prev = node->prev;
-	//	prev->next = node->next;
-	//	next->prev = prev;
-	//	//node->prev = nullptr;
-	//	//node->next = nullptr;
-	//	if (cs) {
-	//		LeaveCriticalSection(cs);
-	//	}
-	//}
 
 	struct databilist {
 		void* data;
@@ -263,10 +224,13 @@ cc::databilist bilsmem[max_node] = { 0 };
 
 PROCINFO procInfo[max_proc] = { 0 };
 
-cc::listinfo meminfo = { 0 };
-cc::listinfo msqinfo = { 0 };
+//cc::listinfo meminfo = { 0 };
+//cc::listinfo msqinfo = { 0 };
 cc::datalist lshead = { 0 };
 cc::databilist bilshead = { 0 };
+
+cc::listinfo cc::list::info = { 0 };//meminfo
+cc::listinfo cc::bilist::info = { 0 };//msqinfo
 
 int currentProcNum = 0;
 bool init_data_struct = false;
@@ -275,19 +239,22 @@ bool init_data_struct = false;
 #pragma comment (linker, "/section:.shared,rws")
 
 void init_list() {
-	InitializeCriticalSection(&meminfo.cs);
+	InitializeCriticalSection(&cc::list::info.cs);
+	//InitializeCriticalSection(&meminfo.cs);
 	//head.data = &meminfo;
 	lshead.ls.next = &lshead.ls;//单向循环链表，头节点自指
-
+	
 	for (int i = 0; i < ARRAYSIZE(lsmem); i++) {
 		msgbuf[i].index = i;
 		lsmem[i].data = &msgbuf[i];
-		cc::list::insert_node(&lshead.ls, &lsmem[i].ls, &meminfo);
+		//cc::list::insert_node(&lshead.ls, &lsmem[i].ls, &meminfo);
+		cc::list::insert_node(&lshead.ls, &lsmem[i].ls);
 	}
 }
 
 void init_bilist() {
-	InitializeCriticalSection(&msqinfo.cs);
+	InitializeCriticalSection(&cc::bilist::info.cs);
+	//InitializeCriticalSection(&msqinfo.cs);
 	//bihead.data = &msqinfo;
 	//双向循环链表，头节点自指
 	bilshead.bils.next = &bilshead.bils;
@@ -314,12 +281,13 @@ EXPORT BOOL SendMsg(unsigned int toOne, MYMSG msg)
 		return FALSE;
 	}
 
-	std::cout << "当前消息队列大小：" << msqinfo.node_nums << std::endl;
+	std::cout << "当前消息队列大小：" << /*msqinfo.node_nums*/ cc::bilist::info.node_nums << std::endl;
 	//if (meminfo.node_nums == 0) {//msq删除节点先于内存回收，如果依据msq==max_node来返回，则可能出现下面的pop_node是头节点(不带数据)
 	//	return FALSE;//等待消费
 	//}
 	//分配一个内存块并取得消息结构
-	cc::list* lsnode = cc::list::pop_node(&lshead.ls, &meminfo);
+	//cc::list* lsnode = cc::list::pop_node(&lshead.ls, &meminfo);
+	cc::list* lsnode = cc::list::pop_node(&lshead.ls);
 	if (lsnode == &lshead.ls) {
 		return FALSE;//等待消费
 	}
@@ -332,7 +300,8 @@ EXPORT BOOL SendMsg(unsigned int toOne, MYMSG msg)
 	mi->msg.createTime = std::time(nullptr);
 	//挂载消息队列
 	bilsmem[mi->index].data = mi;
-	cc::bilist::insert_node(&bilshead.bils, &bilsmem[mi->index].bils, &msqinfo);
+	//cc::bilist::insert_node(&bilshead.bils, &bilsmem[mi->index].bils, &msqinfo);
+	cc::bilist::insert_node(&bilshead.bils, &bilsmem[mi->index].bils);
 
 	if (SetEvent(CreateEvent(NULL, FALSE, FALSE, proc->evname)))
 	{
@@ -388,10 +357,12 @@ EXPORT BOOL RecvMsg(unsigned int self, std::function<void(PMYMSG)> callback)
 #if TEST_TIME
 				func_total += (GetTickCount64() - func_start);
 #endif
-				cc::bilist::delete_node(p, &msqinfo);
-				cc::list::insert_node(&lshead.ls, &lsmem[mi->index].ls, &meminfo);
+				//cc::bilist::delete_node(p, &msqinfo);
+				cc::bilist::delete_node(p);
+				//cc::list::insert_node(&lshead.ls, &lsmem[mi->index].ls, &meminfo);
+				cc::list::insert_node(&lshead.ls, &lsmem[mi->index].ls);
 				proc->recvmsgs++;
-				std::cout << "recv:" << proc->recvmsgs << " msqsize:" << msqinfo.node_nums << std::endl;
+				std::cout << "recv:" << proc->recvmsgs << " msqsize:" << /*msqinfo.node_nums*/ cc::bilist::info.node_nums << std::endl;
 #if TEST_TIME
 				if (proc->recvmsgs == 4096) {
 					std::cout << "func-time:" << func_total << std::endl;//2840-31
